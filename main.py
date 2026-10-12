@@ -1,3 +1,4 @@
+
 import os
 import sqlite3
 import random
@@ -10,17 +11,16 @@ from aiogram.enums import ChatMemberStatus
 
 
 # =========================
-# ОСНОВНЫЕ НАСТРОЙКИ
+# SETTINGS
 # =========================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@AbumCountry1")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+DB_NAME = "gift_chance.db"
 
 if not BOT_TOKEN:
-    raise RuntimeError("Не задан BOT_TOKEN в переменных окружения.")
-
-DB_NAME = "gift_chance.db"
+    raise RuntimeError("BOT_TOKEN is not configured.")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -29,7 +29,7 @@ dp.include_router(router)
 
 
 # =========================
-# ПОДАРКИ И БАЗОВЫЕ ВЕСА
+# GIFTS
 # =========================
 
 GIFTS = [
@@ -46,7 +46,7 @@ GIFTS = [
 
 
 # =========================
-# БАЗА ДАННЫХ
+# DATABASE
 # =========================
 
 def connect_db():
@@ -111,7 +111,6 @@ def init_db():
                 VALUES (?, ?, ?, ?)
             """, (key, name, weight, int(rare)))
 
-        # Буст по умолчанию: 0,5% веса за приглашение.
         db.execute("""
             INSERT OR IGNORE INTO settings (key, value)
             VALUES ('bonus_percent', '0.5')
@@ -130,12 +129,10 @@ def register_user(user_id, username):
 
 def get_referral_count(user_id):
     with connect_db() as db:
-        row = db.execute(
+        return db.execute(
             "SELECT COUNT(*) FROM referrals WHERE inviter_id = ?",
             (user_id,)
-        ).fetchone()
-
-    return row[0]
+        ).fetchone()[0]
 
 
 def get_ticket_count(user_id):
@@ -144,7 +141,6 @@ def get_ticket_count(user_id):
             "SELECT tickets FROM users WHERE user_id = ?",
             (user_id,)
         ).fetchone()
-
     return row[0] if row else 0
 
 
@@ -153,7 +149,6 @@ def get_bonus_percent():
         row = db.execute(
             "SELECT value FROM settings WHERE key = 'bonus_percent'"
         ).fetchone()
-
     return float(row[0]) if row else 0.5
 
 
@@ -164,8 +159,7 @@ def get_current_gift_weights(user_id):
     with connect_db() as db:
         rows = db.execute("""
             SELECT gift_key, name, weight, rare
-            FROM gifts
-            ORDER BY rowid
+            FROM gifts ORDER BY rowid
         """).fetchall()
 
     result = []
@@ -173,6 +167,7 @@ def get_current_gift_weights(user_id):
     for key, name, weight, rare in rows:
         current_weight = float(weight)
 
+        # Every referral increases rare gift weight by 0.5%
         if rare:
             current_weight *= 1 + referrals * bonus / 100
 
@@ -181,16 +176,12 @@ def get_current_gift_weights(user_id):
     return referrals, result
 
 
-# =========================
-# ПРОВЕРКА АДМИНИСТРАТОРА
-# =========================
-
 def is_admin(user_id):
     return ADMIN_ID != 0 and user_id == ADMIN_ID
 
 
 # =========================
-# КОМАНДА /START
+# START
 # =========================
 
 @router.message(CommandStart())
@@ -200,20 +191,17 @@ async def start_command(message: Message):
 
     await message.answer(
         "🎁 <b>Gift Chance Bot</b>\n\n"
-        "Приглашай людей в наш канал и получай попытки "
-        "выиграть подарки!\n\n"
-        "📨 /invite — твоя ссылка для приглашений\n"
-        "🎲 /gift — открыть подарок\n"
-        "📊 /stats — твоя статистика\n"
-        "🎁 /gifts — текущие шансы подарков\n\n"
-        "За каждого нового участника, который вступит "
-        "в канал по твоей ссылке, ты получишь одну попытку.",
+        "Invite people to our channel and earn gift attempts!\n\n"
+        "/invite — your personal invite link\n"
+        "/gift — open a gift\n"
+        "/stats — your statistics\n"
+        "/gifts — gift chances",
         parse_mode="HTML"
     )
 
 
 # =========================
-# КОМАНДА /INVITE
+# INVITE LINK
 # =========================
 
 @router.message(Command("invite"))
@@ -237,9 +225,9 @@ async def invite_command(message: Message):
             )
         except Exception:
             await message.answer(
-                "❌ Не удалось создать ссылку.\n\n"
-                "Проверь, что бот добавлен в канал "
-                "администратором и может приглашать участников."
+                "❌ Could not create your link.\n"
+                "Make sure the bot is an admin in the channel "
+                "and has permission to invite users."
             )
             return
 
@@ -247,25 +235,21 @@ async def invite_command(message: Message):
 
         with connect_db() as db:
             db.execute("""
-                INSERT OR REPLACE INTO invite_links
-                (inviter_id, link)
+                INSERT OR REPLACE INTO invite_links (inviter_id, link)
                 VALUES (?, ?)
             """, (user.id, invite_url))
 
     await message.answer(
-        "🔗 <b>Твоя персональная ссылка:</b>\n\n"
+        "🔗 <b>Your personal invite link:</b>\n\n"
         f"{invite_url}\n\n"
-        "Отправляй её друзьям. За каждого нового "
-        "участника, вступившего по этой ссылке, "
-        "начисляется одна попытка.\n\n"
-        "⚠️ Повторные вступления одного человека "
-        "не дают дополнительные попытки.",
+        "You earn one attempt for each new person "
+        "who joins using your link.",
         parse_mode="HTML"
     )
 
 
 # =========================
-# ОТСЛЕЖИВАНИЕ ВСТУПЛЕНИЙ
+# REFERRAL TRACKING
 # =========================
 
 def is_active_member(member):
@@ -287,7 +271,6 @@ def is_active_member(member):
 def is_target_channel(chat):
     if CHANNEL_ID.startswith("@"):
         return chat.username == CHANNEL_ID[1:]
-
     return str(chat.id) == CHANNEL_ID
 
 
@@ -296,23 +279,15 @@ async def track_referral(event: ChatMemberUpdated):
     if not is_target_channel(event.chat):
         return
 
-    old_member = event.old_chat_member
-    new_member = event.new_chat_member
-
-    # Засчитываем только реальное вступление.
-    if is_active_member(old_member):
+    if is_active_member(event.old_chat_member):
         return
 
-    if not is_active_member(new_member):
+    if not is_active_member(event.new_chat_member):
         return
 
-    invited_user = new_member.user
+    invited_user = event.new_chat_member.user
 
-    if invited_user.is_bot:
-        return
-
-    # Вступление должно произойти именно по нашей ссылке.
-    if not event.invite_link:
+    if invited_user.is_bot or not event.invite_link:
         return
 
     used_link = event.invite_link.invite_link
@@ -331,10 +306,8 @@ async def track_referral(event: ChatMemberUpdated):
         if inviter_id == invited_user.id:
             return
 
-        # Один приглашённый человек учитывается только один раз.
         cursor = db.execute("""
-            INSERT OR IGNORE INTO referrals
-            (referred_id, inviter_id)
+            INSERT OR IGNORE INTO referrals (referred_id, inviter_id)
             VALUES (?, ?)
         """, (invited_user.id, inviter_id))
 
@@ -347,33 +320,29 @@ async def track_referral(event: ChatMemberUpdated):
         """, (inviter_id,))
 
         db.execute("""
-            UPDATE users
-            SET tickets = tickets + 1
+            UPDATE users SET tickets = tickets + 1
             WHERE user_id = ?
         """, (inviter_id,))
 
         total = db.execute("""
-            SELECT COUNT(*) FROM referrals
-            WHERE inviter_id = ?
+            SELECT COUNT(*) FROM referrals WHERE inviter_id = ?
         """, (inviter_id,)).fetchone()[0]
 
     try:
         await bot.send_message(
             inviter_id,
-            "🎉 <b>Новый участник по твоей ссылке!</b>\n\n"
-            "Тебе начислена одна попытка открыть подарок.\n"
-            f"👥 Всего приглашено: {total}\n"
-            "🎲 Открыть подарок: /gift",
+            "🎉 <b>New member joined through your link!</b>\n\n"
+            "You received one gift attempt.\n"
+            f"👥 Total invited: {total}\n"
+            "🎲 Open a gift: /gift",
             parse_mode="HTML"
         )
     except Exception:
-        # Если пользователь временно недоступен,
-        # попытка всё равно сохранена в базе.
         pass
 
 
 # =========================
-# КОМАНДА /GIFT
+# OPEN GIFT
 # =========================
 
 @router.message(Command("gift"))
@@ -381,46 +350,30 @@ async def gift_command(message: Message):
     user = message.from_user
     register_user(user.id, user.username)
 
-    tickets = get_ticket_count(user.id)
-
-    if tickets <= 0:
-        await message.answer(
-            "🎁 У тебя пока нет попыток.\n\n"
-            "Пригласи нового участника через /invite, "
-            "чтобы получить попытку."
-        )
-        return
-
     referrals, gifts = get_current_gift_weights(user.id)
 
-    if not gifts:
-        await message.answer("❌ Список подарков пока пуст.")
-        return
-
-    selected = random.choices(
-        gifts,
-        weights=[item[2] for item in gifts],
-        k=1
-    )[0]
-
-    gift_key, gift_name, _ = selected
-
+    # Transaction prevents spending a nonexistent attempt.
     with connect_db() as db:
-        # Списываем одну попытку и записываем выигрыш.
-        db.execute("""
+        cursor = db.execute("""
             UPDATE users
             SET tickets = tickets - 1
             WHERE user_id = ? AND tickets > 0
         """, (user.id,))
 
-        row = db.execute(
-            "SELECT tickets FROM users WHERE user_id = ?",
-            (user.id,)
-        ).fetchone()
-
-        if not row or row[0] < 0:
-            await message.answer("❌ Не удалось открыть подарок.")
+        if cursor.rowcount == 0:
+            await message.answer(
+                "🎁 You have no attempts yet.\n"
+                "Invite a new member using /invite."
+            )
             return
+
+        selected = random.choices(
+            gifts,
+            weights=[item[2] for item in gifts],
+            k=1
+        )[0]
+
+        gift_key, gift_name, _ = selected
 
         db.execute("""
             INSERT INTO wins (user_id, gift_key, gift_name)
@@ -428,16 +381,16 @@ async def gift_command(message: Message):
         """, (user.id, gift_key, gift_name))
 
     await message.answer(
-        "🎉 <b>Твой подарок:</b>\n\n"
+        "🎉 <b>Your gift:</b>\n\n"
         f"{gift_name}\n\n"
-        f"👥 Приглашено: {referrals}\n"
-        f"🎲 Осталось попыток: {get_ticket_count(user.id)}",
+        f"👥 Invited: {referrals}\n"
+        f"🎲 Attempts left: {get_ticket_count(user.id)}",
         parse_mode="HTML"
     )
 
 
 # =========================
-# КОМАНДА /STATS
+# STATISTICS
 # =========================
 
 @router.message(Command("stats"))
@@ -455,19 +408,19 @@ async def stats_command(message: Message):
         ).fetchone()[0]
 
     await message.answer(
-        "📊 <b>Твоя статистика</b>\n\n"
-        f"👥 Приглашено участников: {referrals}\n"
-        f"🎲 Доступно попыток: {tickets}\n"
-        f"🎁 Открыто подарков: {wins_count}\n"
-        f"📈 Буст редких подарков: "
-        f"+{referrals * get_bonus_percent():.2f}% к весу\n\n"
-        "🔗 Твоя ссылка: /invite",
+        "📊 <b>Your statistics</b>\n\n"
+        f"👥 Invited: {referrals}\n"
+        f"🎲 Attempts: {tickets}\n"
+        f"🎁 Gifts opened: {wins_count}\n"
+        f"📈 Rare gift weight boost: "
+        f"+{referrals * get_bonus_percent():.2f}%\n"
+        "/invite — your link",
         parse_mode="HTML"
     )
 
 
 # =========================
-# КОМАНДА /GIFTS
+# GIFT CHANCES
 # =========================
 
 @router.message(Command("gifts"))
@@ -485,40 +438,33 @@ async def gifts_command(message: Message):
         lines.append(f"{name} — <b>{chance:.2f}%</b>")
 
     await message.answer(
-        "🎁 <b>Шансы выпадения подарков</b>\n\n"
+        "🎁 <b>Your gift chances</b>\n\n"
         + "\n".join(lines)
-        + f"\n\n👥 Твои приглашения: {referrals}\n"
-        f"📈 Буст редких подарков: "
-        f"+{referrals * get_bonus_percent():.2f}% к весу\n\n"
-        "Шансы автоматически пересчитываются "
-        "после каждого нового приглашения.",
+        + f"\n\n👥 Invited: {referrals}\n"
+        f"📈 Rare gift weight boost: "
+        f"+{referrals * get_bonus_percent():.2f}%\n\n"
+        "Chances are recalculated automatically.",
         parse_mode="HTML"
     )
 
 
 # =========================
-# АДМИН-КОМАНДЫ
+# ADMIN PANEL
 # =========================
 
 @router.message(Command("admin"))
 async def admin_command(message: Message):
     if not is_admin(message.from_user.id):
-        await message.answer("⛔ Эта команда доступна только администратору.")
+        await message.answer("⛔ Admin only.")
         return
 
     await message.answer(
-        "⚙️ <b>Панель настроек</b>\n\n"
-        "Изменить базовый вес подарка:\n"
-        "<code>/setweight teddy 50</code>\n\n"
-        "Доступные ключи:\n"
-        "<code>teddy, heart, rose, mystery, ring, "
-        "diamond, bouquet, cake, nft</code>\n\n"
-        "Изменить буст за приглашение:\n"
-        "<code>/setbonus 0.5</code>\n\n"
-        "Значение 0.5 означает увеличение веса "
-        "каждого редкого подарка на 0,5% за "
-        "каждого нового приглашённого.\n\n"
-        "Изменения сохраняются в базе данных.",
+        "⚙️ <b>Admin commands</b>\n\n"
+        "/setweight nft 1 — change gift weight\n"
+        "/setbonus 0.5 — change referral boost\n\n"
+        "Gift keys:\n"
+        "teddy, heart, rose, mystery, ring, "
+        "diamond, bouquet, cake, nft",
         parse_mode="HTML"
     )
 
@@ -526,15 +472,13 @@ async def admin_command(message: Message):
 @router.message(Command("setweight"))
 async def setweight_command(message: Message):
     if not is_admin(message.from_user.id):
-        await message.answer("⛔ Нет доступа.")
+        await message.answer("⛔ Admin only.")
         return
 
     parts = (message.text or "").split()
 
     if len(parts) != 3:
-        await message.answer(
-            "Формат: /setweight nft 1"
-        )
+        await message.answer("Format: /setweight nft 1")
         return
 
     key = parts[1].lower()
@@ -542,51 +486,47 @@ async def setweight_command(message: Message):
     try:
         weight = float(parts[2])
     except ValueError:
-        await message.answer("❌ Вес должен быть числом.")
+        await message.answer("Weight must be a number.")
         return
 
     if weight <= 0:
-        await message.answer("❌ Вес должен быть больше нуля.")
+        await message.answer("Weight must be greater than zero.")
         return
 
     with connect_db() as db:
         cursor = db.execute("""
-            UPDATE gifts SET weight = ?
-            WHERE gift_key = ?
+            UPDATE gifts SET weight = ? WHERE gift_key = ?
         """, (weight, key))
 
     if cursor.rowcount == 0:
-        await message.answer("❌ Неизвестный ключ подарка.")
+        await message.answer("Unknown gift key.")
         return
 
     await message.answer(
-        f"✅ Базовый вес подарка <b>{key}</b> теперь {weight:g}.",
-        parse_mode="HTML"
+        f"✅ Base weight for {key} is now {weight:g}."
     )
 
 
 @router.message(Command("setbonus"))
 async def setbonus_command(message: Message):
     if not is_admin(message.from_user.id):
-        await message.answer("⛔ Нет доступа.")
+        await message.answer("⛔ Admin only.")
         return
 
     parts = (message.text or "").split()
 
     if len(parts) != 2:
-        await message.answer("Формат: /setbonus 0.5")
+        await message.answer("Format: /setbonus 0.5")
         return
 
     try:
         bonus = float(parts[1])
     except ValueError:
-        await message.answer("❌ Буст должен быть числом.")
+        await message.answer("Boost must be a number.")
         return
 
     if bonus < 0 or bonus > 100:
-        await message.answer(
-            "❌ Укажи значение от 0 до 100."
-        )
+        await message.answer("Use a value between 0 and 100.")
         return
 
     with connect_db() as db:
@@ -598,19 +538,17 @@ async def setbonus_command(message: Message):
         """, (str(bonus),))
 
     await message.answer(
-        f"✅ Буст установлен: +{bonus:g}% к весу "
-        "каждого редкого подарка за приглашение."
+        f"✅ Rare gift weight boost: +{bonus:g}% per referral."
     )
 
 
 # =========================
-# ЗАПУСК
+# RUN BOT
 # =========================
 
 async def main():
     init_db()
-
-    print("Gift Chance Bot запущен.")
+    print("Gift Chance Bot is running.")
 
     await dp.start_polling(
         bot,
@@ -620,3 +558,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
